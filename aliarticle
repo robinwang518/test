@@ -1,0 +1,251 @@
+<?php
+namespace Admin\Controller;
+use Think\Controller;
+/*aliarticle 文章库*/
+/*alinks 关键词库*/
+/*makeUrl 文章H1链接匹配*/
+/*makeContent文章内链生成*/
+/*RedisCache 关键词信息存储入内存*/
+class AliArticleController extends Controller 
+{
+    public function _initialize(){ 
+		$this->article = M('aliarticle');
+		$this->links= M('alilinks');
+		$this->linkNum = $this->links->count();
+		/*redis库连接*/
+		$this->redis = new \Redis();
+		$this->redis->connect('localhost', '6379'); 
+		$this->redis->select(1);
+		
+	} 
+	/*文章H1过滤,匹配链接生成*/
+	public function makeUrl(){
+		$info = $this->article->Field('id,title,content')->select();
+		/*数据遍历*/
+		
+		foreach ($info as $v){
+			$title = $v['title']; 
+			$condition['name'] = trim($v['title']);
+			$links = $this->links->where($condition)->find();
+ 
+			if ($links['url']){
+				//过滤内容中h1标签
+				 $data['content'] = preg_replace('/<h1>(.*)<\/h1>/isU','',$v['content']);	
+				 $data['url'] = $links['url']; 
+			     $data['wap_url'] = $links['wap_url']; 				 
+				 $data['id']  = $v['id'];    
+				 $this->article->where('id='.$v['id'])->save($data); 
+		} 
+		 
+		
+   } 
+   dump('生成完毕');
+}
+
+/* 内链文章生成*/
+public function makeLinks(){  
+		$map['pc_content'] = array('eq',''); 
+	    $result = $this->article->where($map)->select();   
+	  if (I('get.fork_num') && I('get.cate_num')){
+	        $all_cate_num = count($result);
+	        $fork_num = I('get.fork_num')-1;
+	        $cate_num = I('get.cate_num'); 
+	        $result = array_slice($result, $fork_num*$cate_num,$cate_num);  
+	        
+	    } 
+	  
+		$info  = $result;
+		/*数据遍历*/
+		
+		foreach ($info as $v){
+			$title = $v['title'];
+			$content = $v['content'];
+			echo $v['id']."ok\n"; 
+			$this->newcontent($v['id'],$content); 
+			
+		 
+   } 
+}
+ 
+ /*生成新内容*/
+   public function newcontent($id,$content){  
+			for ($i=0;$i<$this->linkNum;$i++){
+			     
+				$linkInfo = $this->redis->hgetall('ali:link:'.$i);
+				$name = $linkInfo['name'];  
+				$url =  $linkInfo['url'];  
+			    $wap_url =  $linkInfo['wap_url']; 
+				// if (preg_match('/'.$name.'/u',$content)){
+					if (strpos($content,$name)){
+				 	echo $name."\n";
+					$j++;
+				 
+					//临时存储，设定标识，防止 二次替换
+					$content = preg_replace('/'.$name.'/u','#'.$j.'#',$content,1);
+					 
+					$tmp_url[$j] = "<a href='$url' target='_blank'>$name</a>";
+					$tmp_wap_url[$j] = "<a href='$wap_url' target='_blank'>$name</a>";
+					
+				}   
+				//匹配到7个后，跳出循环
+				if ($j>7){break;} 
+				
+			}
+				$wap_content = $content;
+			if ($j>0) {
+			    //有匹配时，反向替换
+			    foreach ($tmp_url as $k=>$v){
+			        $val = '#'.$k.'#';  
+			        // $tmpcontent = preg_replace('/'.$val.'/u',$v,$tmpcontent,1);  
+					
+					 $content = str_replace($val,$v,$content); 
+					 $wap_content = str_replace($val,$tmp_wap_url[$k],$wap_content); 
+			
+			    } 
+			}  
+			
+			$data['pc_content'] =$content;
+			$data['wap_content'] =$wap_content;
+			$data['id'] = $id;
+			$this->article->data($data)->save();
+			
+		 
+			// $content = str_replace('"',"'",$content);
+			// $wap_content = str_replace('"',"'",$wap_content);
+			// $sql = 'update site_aliarticle set pc_content ="'.$content.'",wap_content="'.$wap_content.'" where id='.$v['id'];
+			// $this->article->execute($sql); 
+			
+			
+			
+			
+   }
+    
+     /*按长尾关键词长度逆序排序*/
+	 /*关键词信息存储入redis*/
+	 /*存储方式 哈希*/
+   public function redisCache(){ 
+			$data = $this->links->order("length(name) desc")->Field('id,name,url,wap_url')->select();
+			$i=0;
+		    foreach ($data as $v){ 
+		      $arg = array('id'=>$v['id'],'name'=>$v['name'],'url'=>$v['url'],'wap_url'=>$v['wap_url']); 
+			  $this->redis->hmset('ali:link:'.$i,$arg);
+			  echo $i;
+			  $i++;
+			} 
+			dump('Redis存储完毕');
+   }
+   
+   
+   
+   /*导入txt文本链接*/
+   public function importpcwords(){
+	     $file = dirname(__FILE__).'/pclink.txt';  
+		 $file =file($file);
+		 $i=1;
+		 foreach ($file as $v){
+			 preg_match('/<a href="(.*)">(.*)<\/a>/',$v,$matches); 
+			 echo $matches[1].'--'.$matches[2]."\n";
+			// $data['name'] =$matches[2];
+			 $data['url'] =$matches[1]; 
+			  $data['id'] = $i; 
+			 echo $matches[2]."\n";
+			 $this->links->data($data)->save();
+			 $i++;
+			 
+		 }
+		 
+	   dump('添加完毕');
+	   
+   }
+   
+     /*导入txt文本链接*/
+   public function importwapwords(){
+	     $file = dirname(__FILE__).'/waplink.txt';  
+		 $file =file($file);
+		 $i=1;
+		 foreach ($file as $v){
+			 preg_match('/<a href="(.*)">(.*)<\/a>/',$v,$matches); 
+			 echo $matches[1].'--'.$matches[2]."\n"; 
+			 $data['wap_url'] = $matches[1]; 
+			 $data['id'] = $i; 
+			 echo $matches[2]."\n";
+			 $this->links->data($data)->save();
+			 
+			$i++; 
+		 }
+		 
+	   dump('添加完毕');
+	   
+   }
+   
+   
+   
+   //读取xls文本
+  
+   
+    public function indextest()
+    {
+       $file = dirname(__FILE__).'/list.xls'; 
+       $this->readxls($file);
+        
+    }
+	   
+	
+   /*读取excel文件*/
+   public function readxls($file){
+       import('Org.Util.PHPExcel');
+       import('Org.Util.PHPExcel.IOFactory');
+       $PHPExcel_IOFactory = new \PHPExcel_IOFactory;
+       $reader = $PHPExcel_IOFactory->createReader('Excel5'); //设置以Excel5格式(Excel97-2003工作簿)
+       $PHPExcel = $reader->load($file); // 载入excel文件
+       $sheet = $PHPExcel->getSheet(0); // 读取第一個工作表
+       $highestRow = $sheet->getHighestRow(); // 取得总行数
+       $highestColumm = $sheet->getHighestColumn(); // 取得总列数
+       $highestColumm = $this->strTonum($highestColumm);
+ 
+        
+        
+       /** 循环读取每个单元格的数据 */
+       for ($row = 1; $row <= $highestRow; $row++){//行数是以第1行开始
+           for ($column = 0; $column < $highestColumm; $column++) {//列数是以第0列开始
+               //清除富文本
+               $val = (string)$sheet->getCellByColumnAndRow($column, $row)->getValue();
+               $arg[$row][$column]=$val;
+           }
+            
+       }
+       foreach ($arg as $key=>$val){
+           /*插入站点信息*/
+		 
+      if (is_array($val)){
+     
+           $data['title'] = $val['0']; 
+		   $data['content'] = preg_replace('/<h1>(.*)<\/h1>/isU','',$val['1']);		
+           $this->article->data($data)->add();
+    
+            
+       } 
+            
+       }
+        
+      echo '完毕';
+        
+   }
+   
+ 
+	
+   public function strTonum($str){
+       $str= strtolower($str);
+       $array=array('a','b','c','d','e','f','g','h','i','j','k','l','m','n','o','p','q','r','s','t','u','v','w','x','y','z');
+       for($i=0;$i<count($array);$i++){
+           if ($str == $array[$i]) {return $i+1; break ;}
+            
+       }
+   }
+   
+   /*字母转化为数字*/
+    
+ 
+ 
+   
+}
